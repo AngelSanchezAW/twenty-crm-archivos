@@ -1,0 +1,117 @@
+# Versión de la sintaxis de Docker Compose que se utilizará. '3.8' es una versión moderna y estable.
+version: '3.8'
+
+# Define un nombre de proyecto personalizado. Esto ayuda a agrupar los contenedores y redes bajo un nombre específico.
+name: twenty-crm
+
+# Aquí se definen todos los contenedores (servicios) que componen la aplicación.
+services:
+
+  # ------------------------------------------------------------------------------------
+  # SERVICIO 1: SERVER (El cerebro de la aplicación)
+  # ------------------------------------------------------------------------------------
+  server:
+    image: twentycrm/twenty:${TAG:-latest}
+    restart: always
+    volumes:
+      - server-local-data-fresh:/app/packages/twenty-server/.local-storage
+    environment:
+      # La URL de la base de datos exige que el usuario y la contraseña estén definidos en el .env.
+      PG_DATABASE_URL: postgres://${PG_DATABASE_USER:?err_db_user_is_not_set}:${PG_DATABASE_PASSWORD:?err_db_pass_is_not_set}@db:5432/default
+      
+      # --- CAMBIO CLAVE (Generalización) ---
+      # Ahora, la URL del servidor es obligatoria y debe definirse en el archivo .env.
+      # Se elimina el valor por defecto para que este archivo sea genérico.
+      SERVER_URL: ${SERVER_URL:?err_server_url_is_not_set}
+      REDIS_URL: redis://redis:6379
+      DISABLE_DB_MIGRATIONS: ${DISABLE_DB_MIGRATIONS}
+      DISABLE_CRON_JOBS_REGISTRATION: ${DISABLE_CRON_JOBS_REGISTRATION:-false}
+      APP_SECRET: ${APP_SECRET:?err_app_secret_is_not_set}
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: curl --fail http://localhost:3000/healthz
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik-proxy"
+      # --- CAMBIO CLAVE (Generalización) ---
+      # La regla de enrutamiento ahora usa una variable del .env.
+      # Esto evita tener que editar el dominio directamente en este archivo.
+      - "traefik.http.routers.twenty.rule=Host(`${DOMAIN_NAME:?err_domain_name_is_not_set}`)"
+      - "traefik.http.routers.twenty.entrypoints=websecure"
+      - "traefik.http.routers.twenty.tls=true"
+      - "traefik.http.routers.twenty.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.twenty.loadbalancer.server.port=3000"
+    networks:
+      - traefik-proxy
+      - default
+
+  # ------------------------------------------------------------------------------------
+  # SERVICIO 2: WORKER (El trabajador en segundo plano)
+  # ------------------------------------------------------------------------------------
+  worker:
+    image: twentycrm/twenty:${TAG:-latest}
+    restart: always
+    command: ["yarn", "worker:prod"]
+    volumes:
+      - server-local-data-fresh:/app/packages/twenty-server/.local-storage
+    environment:
+      PG_DATABASE_URL: postgres://${PG_DATABASE_USER:?err_db_user_is_not_set}:${PG_DATABASE_PASSWORD:?err_db_pass_is_not_set}@db:5432/default
+      # Se aplica el mismo cambio aquí para consistencia.
+      SERVER_URL: ${SERVER_URL:?err_server_url_is_not_set}
+      REDIS_URL: redis://redis:6379
+      DISABLE_DB_MIGRATIONS: "true"
+      DISABLE_CRON_JOBS_REGISTRATION: "true"
+      APP_SECRET: ${APP_SECRET:?err_app_secret_is_not_set}
+    depends_on:
+      db:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    networks:
+      - default
+
+  # ------------------------------------------------------------------------------------
+  # SERVICIO 3: DB (La base de datos)
+  # ------------------------------------------------------------------------------------
+  db:
+    image: postgres:16
+    restart: always
+    volumes:
+      - db-data-fresh:/var/lib/postgresql/data
+    environment:
+      POSTGRES_USER: ${PG_DATABASE_USER:?err_db_user_is_not_set}
+      POSTGRES_PASSWORD: ${PG_DATABASE_PASSWORD:?err_db_pass_is_not_set}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_DATABASE_USER:?err_db_user_is_not_set} -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - default
+
+  # ------------------------------------------------------------------------------------
+  # SERVICIO 4: REDIS (La memoria caché)
+  # ------------------------------------------------------------------------------------
+  redis:
+    image: redis
+    restart: always
+    command: ["--maxmemory-policy", "noeviction"]
+    networks:
+      - default
+
+# --- Definición de Volúmenes ---
+volumes:
+  db-data-fresh:
+  server-local-data-fresh:
+
+# --- Definición de Redes ---
+networks:
+  traefik-proxy:
+    external: true
+  default:
+    driver: bridge
