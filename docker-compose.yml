@@ -34,7 +34,7 @@ services:
       test: curl --fail http://localhost:3000/healthz
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=traefik-proxy"
